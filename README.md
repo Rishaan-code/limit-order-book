@@ -2,9 +2,8 @@
 
 I built this to actually understand how exchanges work at the data structure level. Started reading about market microstructure and kept wondering what the matching engine looks like under the hood, so I just built one.
 
-It's a full limit order book in Python — price-time priority matching, all four order types, cancel/amend, a backtesting framework, synthetic market data via GBM, and 32 tests including property-based tests with Hypothesis. Hits 130K+ orders/sec on a single core.
+It's a full limit order book in Python w/ price-time priority matching, all four order types, cancel/amend, a backtesting framework, synthetic market data via GBM, and 32 tests including property-based tests with Hypothesis. Hits 130K+ orders/sec on a single core.
 
----
 
 ## what it does
 
@@ -48,7 +47,7 @@ each price level needs two things: FIFO ordering (time priority) and O(1) cancel
 `sortedcontainers.SortedDict` gives O(log n) insert/delete and O(1) best price. bids use negated keys so highest bid is always at index 0. in production you'd use a custom C++ red-black tree but SortedDict has the same complexity in Python.
 
 ### FOK checks liquidity before touching anything
-fill-or-kill orders first probe how much is available at or better than the limit price, without modifying any state. only if the full qty is available does it actually execute. the naive approach partially fills then realizes it can't complete — that corrupts the book. the probe is O(k levels checked) with zero side effects.
+fill-or-kill orders first probe how much is available at or better than the limit price, without modifying any state. only if the full qty is available does it actually execute. the naive approach partially fills then realizes it can't complete. that corrupts the book. the probe is O(k levels checked) with zero side effects.
 
 ### no thread safety by design
 each OrderBook is single-threaded intentionally. in a real system each symbol runs in its own thread/process with no shared state between books. making it thread-safe with a lock would hide the concurrency model instead of making it explicit.
