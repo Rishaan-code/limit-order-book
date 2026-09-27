@@ -13,7 +13,7 @@ Built to understand the core data structures and algorithms behind market micros
 - **Cancel and amend** with correct time-priority semantics (qty-down preserves priority; price change loses it)
 - **Multi-symbol exchange** routing orders to per-symbol books
 - **Backtesting framework** with three built-in strategies and a full performance report (Sharpe, drawdown, slippage)
-- **Synthetic market data** via Geometric Brownian Motion with Poisson-distributed order arrivals
+- **Synthetic market data**: a latent GBM fair-value process with evenly spaced order events, exponential order sizes, noise traders quoting around fair value, informed market orders, and random cancellation
 - **32 tests** including property-based tests with Hypothesis proving core invariants
 - **Benchmarks** showing 130K+ orders/sec throughput, ~7µs average latency, 1M+ cancels/sec
 
@@ -108,18 +108,36 @@ print(report)
 ══════════════════════════════════════════════════
   Performance Report: MidPriceMeanReversion
 ══════════════════════════════════════════════════
-  Total P&L:           $    42.3812
-  Realized P&L:        $    38.1200
-  Unrealized P&L:      $     4.2612
-  Sharpe Ratio:             0.847
-  Max Drawdown:        $    12.4400
-  Total Fills:                  187
-  Fill Rate:                  73.2%
-  Avg Slippage:            0.42 bps
-  Trade Count:                   94
-  Final Position:                10
+  Total P&L:       $     -0.1140
+  Realized P&L:    $     -0.1140
+  Unrealized P&L:  $      0.0000
+  Max Drawdown:    $      0.1140
+  Total Fills:                 4
+  Fill Rate:              36.4%
+  Trade Count:                22
+  Final Position:              0
 ══════════════════════════════════════════════════
 ```
+
+**The strategy loses money, and that is the correct result.** The price process
+is geometric Brownian motion, which is a random walk with no mean reversion in
+it. There is nothing to revert to, so a mean-reversion strategy should pay the
+spread and bleed. If it printed a positive Sharpe on this data, that would be a
+bug in the simulator, not alpha.
+
+The same holds for `SpreadCapture`: market making against informed flow on a
+random walk loses to adverse selection (5,306 orders, 113 fills, 2.1% fill rate,
+-$2.08 over 5,000 events).
+
+Note that `threshold` has to be scaled to the market's volatility. At the default
+`0.0002` the strategy never trades at all, because the deepest excursion this
+configuration produces is -0.000168, shallower than the trigger. That is a
+property of the parameters, not a fault in the engine, and `0.0001` is used above
+to produce a run that actually trades.
+
+Sharpe is reported but is not meaningful on these runs: the P&L series is flat
+for most events with a handful of jumps, so the ratio blows up on a near-zero
+denominator. Treat it as unimplemented rather than as a result.
 
 ---
 
