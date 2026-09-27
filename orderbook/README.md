@@ -199,3 +199,35 @@ orderbook/
 - Harris, L. (2003). *Trading and Exchanges: Market Microstructure for Practitioners*. Oxford University Press.
 - Gould, M. et al. (2013). Limit order books. *Quantitative Finance*, 13(11), 1709–1742.
 - NASDAQ ITCH 5.0 Protocol Specification (for production message format reference)
+
+### The index scan that made submits O(n)
+
+`_order_index` maps `order_id -> (side, price_key)` so cancel and amend are O(1)
+lookups. Originally, when a price level emptied during matching, the engine
+dropped that level's stale index entries by walking the entire index:
+
+```python
+if level.is_empty():
+    del opposite[price_key]
+    for oid, (s, k) in list(self._order_index.items()):
+        if k == price_key:
+            del self._order_index[oid]
+```
+
+That made an otherwise O(log n) submit O(n) in the number of resting orders, and
+only on the submits that happened to clear a level. The mean stayed fine and the
+tail did not, which is why it survived as long as it did. A fully-filled passive
+order is now dropped from the index at fill time, while its id is still in hand,
+and pruning a level is just the dict delete.
+
+Measured with `benchmarks/bench.py` (`bench_latency_distribution`, n=10,000),
+three runs on one machine:
+
+| | p95 | p99 |
+|---|---|---|
+| with index scan | 1074 to 1141 us | 3837 to 5183 us |
+| current | 14.1 to 15.8 us | 37.4 to 42.7 us |
+
+Roughly 75x at p95. The absolute numbers move with the machine, the ratio does
+not. To reproduce the regression, restore the loop above and re-run the
+benchmark.
