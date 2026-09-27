@@ -14,8 +14,8 @@ Built to understand the core data structures and algorithms behind market micros
 - **Multi-symbol exchange** routing orders to per-symbol books
 - **Backtesting framework** with three built-in strategies and a full performance report (Sharpe, drawdown, slippage)
 - **Synthetic market data**: a latent GBM fair-value process with evenly spaced order events, exponential order sizes, noise traders quoting around fair value, informed market orders, and random cancellation
-- **32 tests** including property-based tests with Hypothesis proving core invariants
-- **Benchmarks** showing 130K+ orders/sec throughput, ~7µs average latency, 1M+ cancels/sec
+- **32 tests**: 28 targeted unit tests plus 4 Hypothesis property-based tests, covering 5 core invariants
+- **Benchmarks** showing 200K+ orders/sec throughput, ~5µs average latency, 1.3M+ cancels/sec, p99 under 35µs
 
 ---
 
@@ -24,13 +24,14 @@ Built to understand the core data structures and algorithms behind market micros
 ```
 Benchmark                    Result
 ─────────────────────────────────────────────
-Limit order throughput       136,780 orders/sec   (7.31 µs avg)
-Matching throughput          132,060 orders/sec   (7.57 µs avg)
-Cancel throughput          1,015,426 cancels/sec  (0.98 µs avg)
-Latency p50                   14.3 µs
-Latency p95                 1978.5 µs
-Latency p99                 2206.9 µs
-Market data generation        36,877 steps/sec
+Limit order throughput       204,618 orders/sec   (4.89 µs avg)
+Matching throughput          163,412 orders/sec   (6.12 µs avg)
+Cancel throughput          1,324,964 cancels/sec  (0.75 µs avg)
+Latency p50                    8.4 µs
+Latency p95                   12.6 µs
+Latency p99                   32.8 µs
+Latency p99.9                 60.5 µs
+Market data generation        36,848 steps/sec
 ─────────────────────────────────────────────
 Hardware: Python 3.12, single core
 ```
@@ -154,7 +155,7 @@ denominator. Treat it as unimplemented rather than as a result.
 ## Running tests
 
 ```bash
-# all 32 tests including property-based
+# all 32 tests (28 unit, 4 Hypothesis property-based)
 pytest tests/ -v
 
 # benchmarks
@@ -175,7 +176,7 @@ orderbook/
 │   ├── backtest.py     # Strategy interface + P&L + performance report
 │   └── market_data.py  # GBM synthetic data + Binance CSV loader
 ├── tests/
-│   └── test_orderbook.py   # 32 tests, property-based with Hypothesis
+│   └── test_orderbook.py   # 32 tests: 28 unit, 4 property-based
 ├── benchmarks/
 │   └── bench.py        # Throughput + latency distribution
 └── README.md

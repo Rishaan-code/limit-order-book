@@ -2,7 +2,7 @@
 
 I built this to actually understand how exchanges work at the data structure level. Started reading about market microstructure and kept wondering what the matching engine looks like under the hood, so I just built one.
 
-It's a full limit order book in Python w/ price-time priority matching, all four order types, cancel/amend, a backtesting framework, synthetic market data via GBM, and 32 tests including property-based tests with Hypothesis. Hits 130K+ orders/sec on a single core.
+It's a full limit order book in Python w/ price-time priority matching, all four order types, cancel/amend, a backtesting framework, synthetic market data via GBM, and 32 tests, 4 of them property-based with Hypothesis. Hits 200K+ orders/sec on a single core.
 
 
 ## what it does
@@ -13,7 +13,7 @@ It's a full limit order book in Python w/ price-time priority matching, all four
 - multi-symbol exchange routing to per-symbol books
 - backtesting framework with 3 built-in strategies and a performance report (Sharpe, drawdown, slippage)
 - synthetic market data from a latent GBM fair value with evenly spaced events
-- 32 tests, property-based tests with Hypothesis
+- 32 tests (28 unit, 4 Hypothesis property-based)
 
 ---
 
@@ -22,13 +22,14 @@ It's a full limit order book in Python w/ price-time priority matching, all four
 ```
 Benchmark                    Result
 ─────────────────────────────────────────────
-Limit order throughput       136,780 orders/sec   (7.31 µs avg)
-Matching throughput          132,060 orders/sec   (7.57 µs avg)
-Cancel throughput          1,015,426 cancels/sec  (0.98 µs avg)
-Latency p50                   14.3 µs
-Latency p95                 1978.5 µs
-Latency p99                 2206.9 µs
-Market data generation        36,877 steps/sec
+Limit order throughput       204,618 orders/sec   (4.89 µs avg)
+Matching throughput          163,412 orders/sec   (6.12 µs avg)
+Cancel throughput          1,324,964 cancels/sec  (0.75 µs avg)
+Latency p50                    8.4 µs
+Latency p95                   12.6 µs
+Latency p99                   32.8 µs
+Latency p99.9                 60.5 µs
+Market data generation        36,848 steps/sec
 ─────────────────────────────────────────────
 Python 3.12, single core
 ```
@@ -167,7 +168,7 @@ orderbook/
 │   ├── backtest.py     # strategy base class + P&L + performance report
 │   └── market_data.py  # GBM synthetic data + Binance CSV loader
 ├── tests/
-│   └── test_orderbook.py   # 32 tests including property-based
+│   └── test_orderbook.py   # 32 tests: 28 unit, 4 property-based
 ├── benchmarks/
 │   └── bench.py
 └── README.md
