@@ -2,7 +2,7 @@
 
 I built this to actually understand how exchanges work at the data structure level. Started reading about market microstructure and kept wondering what the matching engine looks like under the hood, so I just built one.
 
-It's a full limit order book in Python w/ price-time priority matching, all four order types, cancel/amend, a backtesting framework, synthetic market data via GBM, and 32 tests including property-based tests with Hypothesis. Hits 130K+ orders/sec on a single core.
+It's a full limit order book in Python w/ price-time priority matching, all four order types, cancel/amend, a backtesting framework, synthetic market data via GBM, and 32 tests, 4 of them property-based with Hypothesis. Hits 200K+ orders/sec on a single core.
 
 
 ## what it does
@@ -12,8 +12,8 @@ It's a full limit order book in Python w/ price-time priority matching, all four
 - cancel and amend (qty-down preserves time priority, price change loses it)
 - multi-symbol exchange routing to per-symbol books
 - backtesting framework with 3 built-in strategies and a performance report (Sharpe, drawdown, slippage)
-- synthetic market data using GBM + Poisson order arrivals
-- 32 tests, property-based tests with Hypothesis
+- synthetic market data from a latent GBM fair value with evenly spaced events
+- 32 tests (28 unit, 4 Hypothesis property-based)
 
 ---
 
@@ -22,13 +22,14 @@ It's a full limit order book in Python w/ price-time priority matching, all four
 ```
 Benchmark                    Result
 ─────────────────────────────────────────────
-Limit order throughput       136,780 orders/sec   (7.31 µs avg)
-Matching throughput          132,060 orders/sec   (7.57 µs avg)
-Cancel throughput          1,015,426 cancels/sec  (0.98 µs avg)
-Latency p50                   14.3 µs
-Latency p95                 1978.5 µs
-Latency p99                 2206.9 µs
-Market data generation        36,877 steps/sec
+Limit order throughput       204,618 orders/sec   (4.89 µs avg)
+Matching throughput          163,412 orders/sec   (6.12 µs avg)
+Cancel throughput          1,324,964 cancels/sec  (0.75 µs avg)
+Latency p50                    8.4 µs
+Latency p95                   12.6 µs
+Latency p99                   32.8 µs
+Latency p99.9                 60.5 µs
+Market data generation        36,848 steps/sec
 ─────────────────────────────────────────────
 Python 3.12, single core
 ```
@@ -103,18 +104,36 @@ print(report)
 ══════════════════════════════════════════════════
   Performance Report: MidPriceMeanReversion
 ══════════════════════════════════════════════════
-  Total P&L:           $    42.3812
-  Realized P&L:        $    38.1200
-  Unrealized P&L:      $     4.2612
-  Sharpe Ratio:             0.847
-  Max Drawdown:        $    12.4400
-  Total Fills:                  187
-  Fill Rate:                  73.2%
-  Avg Slippage:            0.42 bps
-  Trade Count:                   94
-  Final Position:                10
+  Total P&L:       $     -0.1140
+  Realized P&L:    $     -0.1140
+  Unrealized P&L:  $      0.0000
+  Max Drawdown:    $      0.1140
+  Total Fills:                 4
+  Fill Rate:              36.4%
+  Trade Count:                22
+  Final Position:              0
 ══════════════════════════════════════════════════
 ```
+
+**The strategy loses money, and that is the correct result.** The price process
+is geometric Brownian motion, which is a random walk with no mean reversion in
+it. There is nothing to revert to, so a mean-reversion strategy should pay the
+spread and bleed. If it printed a positive Sharpe on this data, that would be a
+bug in the simulator, not alpha.
+
+The same holds for `SpreadCapture`: market making against informed flow on a
+random walk loses to adverse selection (5,306 orders, 113 fills, 2.1% fill rate,
+-$2.08 over 5,000 events).
+
+Note that `threshold` has to be scaled to the market's volatility. At the default
+`0.0002` the strategy never trades at all, because the deepest excursion this
+configuration produces is -0.000168, shallower than the trigger. That is a
+property of the parameters, not a fault in the engine, and `0.0001` is used above
+to produce a run that actually trades.
+
+Sharpe is reported but is not meaningful on these runs: the P&L series is flat
+for most events with a handful of jumps, so the ratio blows up on a near-zero
+denominator. Treat it as unimplemented rather than as a result.
 
 ---
 
@@ -149,7 +168,7 @@ orderbook/
 │   ├── backtest.py     # strategy base class + P&L + performance report
 │   └── market_data.py  # GBM synthetic data + Binance CSV loader
 ├── tests/
-│   └── test_orderbook.py   # 32 tests including property-based
+│   └── test_orderbook.py   # 32 tests: 28 unit, 4 property-based
 ├── benchmarks/
 │   └── bench.py
 └── README.md

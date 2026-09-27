@@ -3,13 +3,18 @@ orderbook/market_data.py
 
 Synthetic market data generator and replay utilities.
 
-Generates realistic order flow using:
-- Geometric Brownian Motion for mid-price
-- Poisson arrivals for order flow
-- Hawkes process for clustered order arrivals (self-exciting)
-- Log-normal order sizes
+Generates synthetic order flow using:
+- Geometric Brownian Motion for a latent "fair value" process
+- Fixed-interval event stepping (one order event per tick of simulated time)
+- Exponentially distributed order sizes
+- Noise traders quoting around fair value, informed market orders, and
+  random cancellation of resting quotes
 
 Also provides a CSV loader for real tick data (Binance format).
+
+Not modelled: self-exciting (Hawkes) arrival clustering, queue position
+dynamics, latency, or order-level adverse selection. Arrivals are evenly
+spaced rather than Poisson, so inter-arrival times carry no information.
 """
 
 from __future__ import annotations
@@ -29,7 +34,13 @@ class MarketDataConfig:
     symbol:           str   = "AAPL"
     initial_price:    float = 100.0
     tick_size:        float = 0.01
-    volatility:       float = 0.02      # annualized vol
+    # Annualized. Note the interaction with order_rate: a 5,000-event run at
+    # 50 orders/sec spans only ~100 seconds of market time, and a realistic 2%
+    # annualized equity vol over 100 seconds moves the price far less than one
+    # tick. The default below is deliberately high so a short demo run shows
+    # real book dynamics; drop it to 0.02 for realistic equity behaviour over
+    # correspondingly longer runs.
+    volatility:       float = 0.80      # annualized vol
     drift:            float = 0.0       # annualized drift
     spread_ticks:     int   = 2         # initial spread in ticks
     depth_levels:     int   = 10        # levels each side
@@ -42,7 +53,8 @@ class MarketDataConfig:
 class SyntheticMarket:
     """
     Generates synthetic order flow and feeds it to an Exchange.
-    Uses GBM for price discovery with Poisson-distributed order arrivals.
+    A latent GBM "fair value" drives where traders quote; events are stepped at
+    a fixed interval rather than drawn from a Poisson process.
 
     Design note: we maintain a separate "true price" process (GBM) that
     drives where informed traders submit. Noise traders submit randomly
@@ -58,6 +70,7 @@ class SyntheticMarket:
 
         self._true_price = config.initial_price
         self._time_ns    = 0
+        self._resting: list[int] = []   # order ids eligible for cancellation
         self._dt_s       = 1.0 / config.order_rate   # seconds per order event
         self._vol_per_event = (config.volatility
                                * math.sqrt(self._dt_s / (252 * 6.5 * 3600)))
@@ -76,15 +89,28 @@ class SyntheticMarket:
         for i in range(1, cfg.depth_levels + 1):
             ask_price = price + half_spread + (i - 1) * tick
             qty = max(1, int(self._rng.gauss(100, 30)))
-            self.exchange.submit(cfg.symbol, Side.ASK, OrderType.LIMIT,
-                                 qty, ask_price, TimeInForce.GTC,
-                                 timestamp=self._time_ns)
+            r = self.exchange.submit(cfg.symbol, Side.ASK, OrderType.LIMIT,
+                                     qty, ask_price, TimeInForce.GTC,
+                                     timestamp=self._time_ns)
+            self._track(r)
 
             bid_price = price - half_spread - (i - 1) * tick
             qty = max(1, int(self._rng.gauss(100, 30)))
-            self.exchange.submit(cfg.symbol, Side.BID, OrderType.LIMIT,
-                                 qty, bid_price, TimeInForce.GTC,
-                                 timestamp=self._time_ns)
+            r = self.exchange.submit(cfg.symbol, Side.BID, OrderType.LIMIT,
+                                     qty, bid_price, TimeInForce.GTC,
+                                     timestamp=self._time_ns)
+            self._track(r)
+
+    def _track(self, result) -> None:
+        """Remember an order that may still be resting, so it can be cancelled."""
+        order = getattr(result, "order", None)
+        if order is None:
+            return
+        if result.total_filled < order.qty:
+            self._resting.append(order.order_id)
+            # bound the bookkeeping; oldest ids are the most likely to be gone
+            if len(self._resting) > 5000:
+                del self._resting[:1000]
 
     def step(self) -> BookSnapshot:
         """
@@ -122,23 +148,37 @@ class SyntheticMarket:
                                  qty, timestamp=self._time_ns)
 
         elif r < cfg.market_order_frac + cfg.cancel_rate:
-            # cancel a random resting order — handled implicitly by engine
-            pass
+            # Cancel a random resting quote. Previously a no-op, which let stale
+            # quotes accumulate forever and kept the book from ever thinning.
+            if self._resting:
+                idx = self._rng.randrange(len(self._resting))
+                oid = self._resting.pop(idx)
+                self.exchange.cancel(cfg.symbol, oid, timestamp=self._time_ns)
 
         else:
-            # limit order — noise trader around spread
+            # Limit order from a noise trader, quoted around the latent fair
+            # value rather than around the current best.
+            #
+            # Quoting off best_bid/best_ask (the previous behaviour) meant no
+            # order could ever improve the book: every bid landed at or below
+            # the existing best bid and every ask at or above the existing best
+            # ask. The mid stayed pinned within a tick of the initial price
+            # while the GBM wandered away from it, so the book never tracked
+            # its own price process and no price-based strategy could ever
+            # generate a signal.
             side = self._rng.choice([Side.BID, Side.ASK])
+            half_spread = (cfg.spread_ticks * tick) / 2
+            offset = self._rng.randint(0, cfg.depth_levels) * tick
             if side == Side.BID:
-                offset = self._rng.randint(0, cfg.depth_levels) * tick
-                price  = round(best_bid - offset, 4)
+                price = round(self._true_price - half_spread - offset, 4)
             else:
-                offset = self._rng.randint(0, cfg.depth_levels) * tick
-                price  = round(best_ask + offset, 4)
+                price = round(self._true_price + half_spread + offset, 4)
 
             qty = max(1, int(self._rng.expovariate(1/50)))
-            self.exchange.submit(cfg.symbol, side, OrderType.LIMIT,
-                                 qty, price, TimeInForce.GTC,
-                                 timestamp=self._time_ns)
+            res = self.exchange.submit(cfg.symbol, side, OrderType.LIMIT,
+                                       qty, price, TimeInForce.GTC,
+                                       timestamp=self._time_ns)
+            self._track(res)
 
         return self.exchange.snapshot(cfg.symbol, depth=cfg.depth_levels)
 

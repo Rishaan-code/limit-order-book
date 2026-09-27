@@ -46,6 +46,11 @@ class Strategy(ABC):
         self.cash     = 0.0        # running cash P&L from fills
         self._pending_orders: dict[int, tuple[Side, float]] = {}
                                    # order_id -> (side, arrival_mid)
+        self._own_orders: set[int] = set()   # every order id we ever submitted
+        self.submitted_qty = 0     # total qty we asked for
+        self.filled_qty    = 0     # total qty we actually got
+        self.fill_count    = 0     # number of fills involving our orders
+        self.trade_count   = 0     # number of orders we submitted
 
     @abstractmethod
     def on_book_update(self, snapshot: BookSnapshot) -> None:
@@ -63,6 +68,9 @@ class Strategy(ABC):
         arrival_mid = snap.mid_price if snap else price
         result = self.exchange.submit(self.symbol, Side.BID, order_type,
                                       qty, price, tif)
+        self.submitted_qty += qty
+        self.trade_count   += 1
+        self._own_orders.add(result.order.order_id)
         if arrival_mid:
             self._pending_orders[result.order.order_id] = (Side.BID,
                                                             arrival_mid)
@@ -76,6 +84,9 @@ class Strategy(ABC):
         arrival_mid = snap.mid_price if snap else price
         result = self.exchange.submit(self.symbol, Side.ASK, order_type,
                                       qty, price, tif)
+        self.submitted_qty += qty
+        self.trade_count   += 1
+        self._own_orders.add(result.order.order_id)
         if arrival_mid:
             self._pending_orders[result.order.order_id] = (Side.ASK,
                                                             arrival_mid)
@@ -87,16 +98,43 @@ class Strategy(ABC):
         self._pending_orders.pop(order_id, None)
 
     def _process_result(self, result: MatchResult) -> None:
+        """Account for fills generated at the moment we submitted."""
         for fill in result.fills:
             is_agg = fill.aggressor_id == result.order.order_id
-            price  = OrderBook.int_to_price(fill.price)
-            if fill.side == Side.BID:
-                self.position += fill.qty
-                self.cash     -= price * fill.qty
-            else:
-                self.position -= fill.qty
-                self.cash     += price * fill.qty
-            self.on_fill(fill, is_agg)
+            self._apply_fill(fill, aggressor_side=result.order.side, is_agg=is_agg)
+
+    def _apply_fill(self, fill: Fill, aggressor_side: Side, is_agg: bool) -> None:
+        """
+        Update position and cash for one fill.
+
+        `fill.side` is the aggressor's side, so a passive fill has to be booked
+        from our side, not the aggressor's. Getting this wrong inverts the sign
+        of every passive trade.
+        """
+        price = OrderBook.int_to_price(fill.price)
+        our_side = aggressor_side if is_agg else (
+            Side.ASK if aggressor_side == Side.BID else Side.BID)
+        if our_side == Side.BID:
+            self.position += fill.qty
+            self.cash     -= price * fill.qty
+        else:
+            self.position -= fill.qty
+            self.cash     += price * fill.qty
+        self.filled_qty += fill.qty
+        self.fill_count += 1
+        self.on_fill(fill, is_agg)
+
+    def on_passive_fill(self, fill: Fill) -> None:
+        """
+        Called by the backtest engine when a resting order of ours is hit by
+        someone else. Without this a market-making strategy accumulates an
+        invisible position: it posts quotes, they get lifted, and neither
+        position nor cash ever move because _process_result only ever sees
+        fills that happen at submission time.
+        """
+        if fill.passive_id not in self._own_orders:
+            return
+        self._apply_fill(fill, aggressor_side=fill.side, is_agg=False)
 
     @property
     def unrealized_pnl(self) -> float:
@@ -309,8 +347,8 @@ class BacktestEngine:
 
         # register fill callback to track slippage
         def on_fill(fill: Fill) -> None:
-            nonlocal filled_qty
-            filled_qty += fill.qty
+            # Route fills against our resting orders back into the strategy.
+            self.strategy.on_passive_fill(fill)
             # compute slippage vs arrival mid
             entry = self.strategy._pending_orders.get(fill.passive_id)
             if entry:
@@ -332,10 +370,15 @@ class BacktestEngine:
         # compute stats
         sharpe       = self._compute_sharpe(self._pnl_series)
         max_dd       = self._compute_max_drawdown(self._pnl_series)
-        fills        = len(self.strategy.exchange.fill_log)
+        # Count only fills involving our own orders. The exchange fill_log
+        # includes every trade the synthetic market generated against itself,
+        # which is not a measure of anything this strategy did.
+        fills        = self.strategy.fill_count
         avg_slip     = (sum(slippage_bps_list) / len(slippage_bps_list)
                         if slippage_bps_list else 0.0)
-        fill_rate    = filled_qty / submitted_qty if submitted_qty > 0 else 0.0
+        submitted_qty = self.strategy.submitted_qty
+        filled_qty    = self.strategy.filled_qty
+        fill_rate     = filled_qty / submitted_qty if submitted_qty > 0 else 0.0
 
         return PerformanceReport(
             strategy_name  = type(self.strategy).__name__,

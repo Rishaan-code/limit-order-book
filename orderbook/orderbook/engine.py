@@ -371,18 +371,19 @@ class OrderBook:
                 aggressor.fills.append(f)
                 self.total_volume += f.qty
                 self.total_fills  += 1
-                # also update order index for passive order (already done in level)
+                # A fully-filled passive order is already gone from the level,
+                # so drop its index entry here, while we still know its id.
+                # Doing this lazily at prune time meant scanning the whole
+                # index, which made an otherwise O(log n) submit O(n) in the
+                # number of resting orders.
+                if f.passive_id not in level._active:
+                    self._order_index.pop(f.passive_id, None)
 
             fills.extend(level_fills)
 
             # prune empty level
             if level.is_empty():
                 del opposite[price_key]
-                # remove all (should be zero) orders from index on this level
-                for oid in list(self._order_index.keys()):
-                    if self._order_index[oid] == (aggressor.side.opposite(),
-                                                   price_key):
-                        del self._order_index[oid]
 
         return fills
 
